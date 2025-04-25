@@ -1,41 +1,48 @@
 import streamlit as st
 import torch
 import torchvision.transforms as transforms
-from torchvision.models import resnet18
+import torchvision.models as models
 from PIL import Image
 from facenet_pytorch import MTCNN
+import urllib.request
+import os
 
-# Load a small ResNet18 model (randomly initialized, no external file)
-model = resnet18(pretrained=False)
-model.fc = torch.nn.Linear(512, 1)
-model.eval()
+# --- Download model if not exists
+MODEL_URL = "https://huggingface.co/LinkersGraham/age-model/resolve/main/age_model_resnet18_utkface.pth"
+MODEL_PATH = "age_model_resnet18_utkface.pth"
 
-# Load MTCNN face detector
-@st.cache_resource
-def load_detector():
-    return MTCNN(keep_all=True)
+if not os.path.exists(MODEL_PATH):
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
-detector = load_detector()
+# --- Load Face Detector and Age Estimator
+def load_model_and_detector():
+    mtcnn = MTCNN(image_size=160, margin=0)
+    model = models.resnet18()
+    model.fc = torch.nn.Linear(model.fc.in_features, 101)
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
+    model.eval()
+    return mtcnn, model
 
-st.title("WhatsApp Age Estimator (Lite)")
+mtcnn, model = load_model_and_detector()
 
-uploaded_file = st.file_uploader("Upload a WhatsApp Profile Picture")
+# --- Streamlit App
+st.title("WhatsApp Profile Photo Age Estimator")
 
-if uploaded_file is not None:
-    img = Image.open(uploaded_file).convert('RGB')
-    st.image(image, use_container_width=True)
+uploaded_files = st.file_uploader("Upload profile pictures", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-    
-    boxes, probs = detector.detect(img)
-    if boxes is not None:
-        for box in boxes:
-            face = img.crop(box).resize((224, 224))
-            transform = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5])
-            ])
-            face_tensor = transform(face).unsqueeze(0)
-            age_estimation = model(face_tensor).item()
-            st.write(f"Estimated Age (approx): {abs(int(age_estimation))} years")
-    else:
-        st.warning("No face detected!")
+if uploaded_files:
+    for uploaded_file in uploaded_files:
+        image = Image.open(uploaded_file)
+        st.image(image, caption=uploaded_file.name, use_container_width=True)
+
+        # Face detection
+        face = mtcnn(image)
+
+        if face is not None:
+            face = face.unsqueeze(0)
+            with torch.no_grad():
+                age_pred = model(face)
+                predicted_age = torch.argmax(age_pred, 1).item()
+            st.success(f"Estimated Age: {predicted_age} years")
+        else:
+            st.warning("No face detected in this photo.")
